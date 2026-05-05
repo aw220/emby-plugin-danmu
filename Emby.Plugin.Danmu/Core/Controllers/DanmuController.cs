@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net;
 using System.Runtime.Serialization;
 using System.Text.RegularExpressions;
+using Emby.Plugin.Danmu.Core;
 using System.Threading.Tasks;
 using System.Xml;
 using Emby.Plugin.Danmu.Core.Controllers.Dto;
@@ -182,11 +183,17 @@ namespace Emby.Plugin.Danmu.Core.Controllers
 
         private Task<DanmuSourceDto> GetDanmuSourceDto(BaseItem currentItem, string? site)
         {
-            var danmuPath = Path.Combine(
+            var useLegacyDanmuDirectory = Plugin.Instance?.Configuration?.UseLegacyDanmuDirectory ?? false;
+            var preferredProviderIds = string.IsNullOrEmpty(site)
+                ? Array.Empty<string>()
+                : new[] { site };
+            var danmuPath = DanmuFileLocator.FindBestExistingDanmuFile(
                 currentItem.ContainingFolderPath,
-                currentItem.FileNameWithoutExtension + (site != null ? "_" + site : string.Empty) + ".xml");
-            var fileMeta = _fileSystem.GetFileInfo(danmuPath);
-            if (!fileMeta.Exists)
+                currentItem.FileNameWithoutExtension,
+                preferredProviderIds,
+                useLegacyDanmuDirectory);
+            var fileMeta = string.IsNullOrEmpty(danmuPath) ? null : _fileSystem.GetFileInfo(danmuPath);
+            if (fileMeta == null || !fileMeta.Exists)
             {
                 return Task.FromResult<DanmuSourceDto>(null);
             }
@@ -314,24 +321,20 @@ namespace Emby.Plugin.Danmu.Core.Controllers
                 throw new ResourceNotFoundException();
             }
 
-            var readOnlyCollection = _scraperManager.All();
-            foreach (AbstractScraper abstractScraper in readOnlyCollection)
+            if (string.IsNullOrEmpty(currentItem.ContainingFolderPath) || string.IsNullOrEmpty(currentItem.FileNameWithoutExtension))
             {
-               var danmuPath = Path.Combine(currentItem.ContainingFolderPath, currentItem.FileNameWithoutExtension + "_" + abstractScraper.ProviderId + ".xml");
-               var fileMeta = _fileSystem.GetFileInfo(danmuPath);
-               if (fileMeta.Exists)
-               {
-                   return File.ReadAllBytes(danmuPath);
-               }
+                return null;
             }
-            
-            var defaultDanmuPath = Path.Combine(currentItem.ContainingFolderPath, currentItem.FileNameWithoutExtension + ".xml");
-            var defaultFileMeta = _fileSystem.GetFileInfo(defaultDanmuPath);
-            if (defaultFileMeta.Exists)
-            {
-                return File.ReadAllBytes(defaultDanmuPath);
-            }
-            return null;
+
+            var enabledProviderIds = _scraperManager.All().Select(x => x.ProviderId).ToList();
+            var useLegacyDanmuDirectory = Plugin.Instance?.Configuration?.UseLegacyDanmuDirectory ?? false;
+            var matchedPath = DanmuFileLocator.FindBestExistingDanmuFile(
+                currentItem.ContainingFolderPath,
+                currentItem.FileNameWithoutExtension,
+                enabledProviderIds,
+                useLegacyDanmuDirectory);
+
+            return string.IsNullOrEmpty(matchedPath) ? null : File.ReadAllBytes(matchedPath);
         }
         
         //
@@ -514,17 +517,13 @@ namespace Emby.Plugin.Danmu.Core.Controllers
                 throw new ResourceNotFoundException();
             }
         
-            if (item is Movie || item is Season)
+            if (item is Movie || item is Season || item is Episode)
             {
-                _logger.Info("Movie {0}, {1}", item.Name, item.GetType());
-                _libraryManagerEventsHelper.QueueItem(item, Model.EventType.Add);
-                _libraryManagerEventsHelper.QueueItem(item, Model.EventType.Update);
-                _libraryManagerEventsHelper.QueueItem(item, Model.EventType.Update);
-            }
-            else if (item is Episode)
-            {
-                _logger.Info("Episode {0}, {1}", item.Name, item.GetType());
-                _libraryManagerEventsHelper.QueueItem(item, Model.EventType.Update);
+                _logger.Info("Refresh {0}, {1}", item.Name, item.GetType());
+                foreach (var eventType in DanmuEventPlanner.GetItemAddedEvents(item))
+                {
+                    _libraryManagerEventsHelper.QueueItem(item, eventType);
+                }
             }
             else if (item is Series)
             {
@@ -532,9 +531,10 @@ namespace Emby.Plugin.Danmu.Core.Controllers
                 foreach (var season in seasons)
                 {
                     _logger.Info("season = {0}, type={1}, Guid.Empty={2}", season.Name, season.GetType(), Guid.Empty.Equals(season.Id));
-                    _libraryManagerEventsHelper.QueueItem(season, Model.EventType.Add);
-                    _libraryManagerEventsHelper.QueueItem(season, Model.EventType.Update);
-                    _libraryManagerEventsHelper.QueueItem(season, Model.EventType.Update);
+                    foreach (var eventType in DanmuEventPlanner.GetItemAddedEvents(season))
+                    {
+                        _libraryManagerEventsHelper.QueueItem(season, eventType);
+                    }
                 }
             }
         

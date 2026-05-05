@@ -27,9 +27,21 @@ namespace Emby.Plugin.Danmu.Scraper.Youku
         protected string _token = string.Empty;
         protected string _tokenEnc = string.Empty;
 
+        // 不走代理的直连HttpClient，专用于mmstat/acs.youku.com获取cookie
+        private readonly HttpClient _directHttpClient;
+
         public YoukuApi(ILogManager logManager, IHttpClient httpClient)
             : base(logManager.getDefaultLogger("YoukuApi"), httpClient)
         {
+            var handler = new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                UseCookies = false, // cookie由插件自行管理
+                UseProxy = false,   // 关键：不走代理，直连
+                ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true
+            };
+            _directHttpClient = new HttpClient(handler);
+            _directHttpClient.DefaultRequestHeaders.UserAgent.ParseAdd(HTTP_USER_AGENT);
         }
 
         public async Task<List<YoukuVideo>> SearchAsync(string keyword, CancellationToken cancellationToken)
@@ -330,18 +342,30 @@ namespace Emby.Plugin.Danmu.Scraper.Youku
 
             if (cookie == null)
             {
-                var url = "https://log.mmstat.com/eg.js";
-                var request = GetDefaultHttpRequestOptions(url, null, cancellationToken);
-                var response = await this.httpClient.GetAsync(request).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-
-                if (response.Headers.TryGetValue("Set-Cookie", out var setCookie))
+                try
                 {
-                    AddCookies(mmstatUri, setCookie);
-                }
+                    // 使用不走代理的直连HttpClient请求mmstat获取cna cookie
+                    var url = "https://log.mmstat.com/eg.js";
+                    var directResponse = await _directHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                    directResponse.EnsureSuccessStatusCode();
 
-                cookies = this._cookieContainer.GetCookies(mmstatUri);
-                cookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "cna");
+                    if (directResponse.Headers.TryGetValues("Set-Cookie", out var setCookieValues))
+                    {
+                        foreach (var val in setCookieValues)
+                        {
+                            AddCookies(mmstatUri, val);
+                        }
+                    }
+
+                    cookies = this._cookieContainer.GetCookies(mmstatUri);
+                    cookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "cna");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn("EnsureTokenCookie - 请求 mmstat.com 失败(SSL/网络问题)，将使用随机cna: {0}", ex.Message);
+                    var randomCna = Convert.ToBase64String(Guid.NewGuid().ToByteArray()).TrimEnd('=').Substring(0, 25);
+                    this._cna = randomCna;
+                }
             }
 
             if (cookie != null)
@@ -356,19 +380,29 @@ namespace Emby.Plugin.Danmu.Scraper.Youku
 
             if (tokenCookie == null || tokenEncCookie == null)
             {
-                var url = "https://acs.youku.com/h5/mtop.com.youku.aplatform.weakget/1.0/?jsv=2.5.1&appKey=24679788";
-                var request = GetDefaultHttpRequestOptions(url, null, cancellationToken);
-                var response = await this.httpClient.GetAsync(request).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-
-                if (response.Headers.TryGetValue("Set-Cookie", out var setCookie))
+                try
                 {
-                    AddCookies(youkuUri, setCookie, ' ');
-                }
+                    // 同样使用直连HttpClient，避免代理干扰cookie获取
+                    var url = "https://acs.youku.com/h5/mtop.com.youku.aplatform.weakget/1.0/?jsv=2.5.1&appKey=24679788";
+                    var directResponse = await _directHttpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                    directResponse.EnsureSuccessStatusCode();
 
-                cookies = this._cookieContainer.GetCookies(youkuUri);
-                tokenCookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "_m_h5_tk");
-                tokenEncCookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "_m_h5_tk_enc");
+                    if (directResponse.Headers.TryGetValues("Set-Cookie", out var setCookieValues))
+                    {
+                        foreach (var val in setCookieValues)
+                        {
+                            AddCookies(youkuUri, val, ' ');
+                        }
+                    }
+
+                    cookies = this._cookieContainer.GetCookies(youkuUri);
+                    tokenCookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "_m_h5_tk");
+                    tokenEncCookie = cookies.Cast<Cookie>().FirstOrDefault(x => x.Name == "_m_h5_tk_enc");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn("EnsureTokenCookie - 请求 acs.youku.com 获取token失败: {0}", ex.Message);
+                }
             }
 
             if (tokenCookie != null)
@@ -389,7 +423,10 @@ namespace Emby.Plugin.Danmu.Scraper.Youku
 
         protected string generateTokenSign(string t, string appKey, string data)
         {
-            var arr = new string[] { this._token.Substring(0, 32), t, appKey, data };
+            var tokenPart = string.IsNullOrEmpty(this._token) ? "" 
+                : this._token.Length >= 32 ? this._token.Substring(0, 32) 
+                : this._token;
+            var arr = new string[] { tokenPart, t, appKey, data };
             return string.Join("&", arr).ToMD5().ToLower();
         }
     }

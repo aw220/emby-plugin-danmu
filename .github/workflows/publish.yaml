@@ -45,8 +45,10 @@ jobs:
         run: |
           dotnet restore ${{ env.project }} --no-cache
           dotnet publish --nologo --no-restore --configuration=Release --framework=netstandard2.0 -p:Version=${{steps.vars.outputs.VERSION}} ${{ env.project }}
-          mkdir -p artifacts
-          zip -j ./artifacts/${{ env.artifact }}_${{steps.vars.outputs.VERSION}}.zip ./Emby.Plugin.Danmu/bin/Release/netstandard2.0/Emby.Plugin.Danmu.dll
+          mkdir -p artifacts/package
+          cp ./Emby.Plugin.Danmu/bin/Release/netstandard2.0/Emby.Plugin.Danmu.dll ./artifacts/package/
+          cp ./Emby.Plugin.Danmu/bin/Release/netstandard2.0/Google.Protobuf.dll ./artifacts/package/
+          (cd ./artifacts/package && zip ../${{ env.artifact }}_${{steps.vars.outputs.VERSION}}.zip Emby.Plugin.Danmu.dll Google.Protobuf.dll)
       - name: Publish release
         uses: svenstaro/upload-release-action@v2
         with:

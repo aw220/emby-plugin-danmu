@@ -46,6 +46,7 @@ define(
                     container.querySelector('#current_version').textContent = "v" + config.Version;
 
                     container.querySelector('#ToAss').checked = config.ToAss;
+                    container.querySelector('#UseLegacyDanmuDirectory').checked = !!config.UseLegacyDanmuDirectory;
                     container.querySelector('#AssFont').value = config.AssFont;
                     container.querySelector('#AssFontSize').value = config.AssFontSize;
                     container.querySelector('#AssTextOpacity').value = config.AssTextOpacity;
@@ -135,6 +136,7 @@ define(
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(TemplateConfig.pluginUniqueId).then(function (config) {
                         config.ToAss = document.querySelector('#ToAss').checked;
+                        config.UseLegacyDanmuDirectory = document.querySelector('#UseLegacyDanmuDirectory').checked;
                         config.AssFont = document.querySelector('#AssFont').value;
                         config.AssFontSize = document.querySelector('#AssFontSize').value;
                         config.AssTextOpacity = document.querySelector('#AssTextOpacity').value;

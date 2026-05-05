@@ -53,6 +53,12 @@ namespace Emby.Plugin.Danmu.Configuration
         /// </summary>
         public bool OpenAllSource { get; set; } = false;
 
+        /// <summary>
+        /// 是否继续把弹幕文件写回媒体文件同目录。
+        /// 默认关闭，默认写入剧集/电影目录下的 danmu/ 子目录。
+        /// </summary>
+        public bool UseLegacyDanmuDirectory { get; set; } = false;
+
 
         /// <summary>
         /// 弹幕源.

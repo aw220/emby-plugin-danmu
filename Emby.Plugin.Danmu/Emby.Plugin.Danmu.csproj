@@ -4,6 +4,7 @@
         <Description>弹幕插件</Description>
         <PackageTags>emby;plugin;pms;media;server;</PackageTags>
         <LangVersion>8.0</LangVersion>
+        <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     </PropertyGroup>
     <ItemGroup>
         <None Remove="Configuration\logo.png" />

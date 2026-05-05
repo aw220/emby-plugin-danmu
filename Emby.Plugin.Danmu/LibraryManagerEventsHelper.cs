@@ -21,7 +21,6 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Logging;
 using Microsoft.Extensions.Caching.Memory;
 using Emby.Plugin.Danmu.Scraper.Bilibili; // 为了访问 Bilibili.ScraperProviderId
-using Emby.Plugin.Danmu.Scraper.Iqiyi;   // 为了访问 Iqiyi.ScraperProviderId
 using IFileSystem = Emby.Plugin.Danmu.Core.IFileSystem;
 
 namespace Emby.Plugin.Danmu
@@ -44,6 +43,7 @@ namespace Emby.Plugin.Danmu
         private readonly IFileSystem _fileSystem;
         private Timer _queueTimer;
         private readonly ScraperManager _scraperManager;
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _downloadLocks = new ConcurrentDictionary<string, SemaphoreSlim>();
         
         // 为强制下载任务设计的专用队列和信号量
         private readonly ConcurrentQueue<LibraryEvent> _forceEventQueue = new ConcurrentQueue<LibraryEvent>();
@@ -74,9 +74,10 @@ namespace Emby.Plugin.Danmu
             _libraryManager.ItemAdded += (sender, args) =>
             {
                 var argsItem = args.Item;
-                QueueItem(argsItem, EventType.Add);
-                QueueItem(argsItem, EventType.Update);
-                QueueItem(argsItem, EventType.Update);
+                foreach (var eventType in DanmuEventPlanner.GetItemAddedEvents(argsItem))
+                {
+                    QueueItem(argsItem, eventType);
+                }
             };
             _logger = logManager.getDefaultLogger(GetType().ToString());
             _scraperManager = SingletonManager.ScraperManager;
@@ -111,6 +112,12 @@ namespace Emby.Plugin.Danmu
             // 对于其他事件类型(Add, Update)，使用现有的延迟队列逻辑
             lock (_queuedEvents)
             {
+                if (_queuedEvents.Any(ev => ev.Item != null && ev.Item.Id == item.Id && ev.EventType == eventType))
+                {
+                    _logger.Debug("忽略重复事件: {0}, eventType={1}", item.Name, eventType);
+                    return;
+                }
+
                 if (_queueTimer == null)
                 {
                     _queueTimer = new Timer(
@@ -839,7 +846,16 @@ namespace Emby.Plugin.Danmu
                                         queueUpdateMeta.Add(episode);
                                     }
 
-                                    var danmuXmlPath = Path.Combine(episode.ContainingFolderPath, episode.GetDanmuXmlPath(scraper.ProviderId));
+                                    var danmuXmlPath = DanmuFileLocator.FindBestExistingDanmuFile(
+                                        episode.ContainingFolderPath,
+                                        episode.FileNameWithoutExtension,
+                                        new[] { scraper.ProviderId },
+                                        Config.UseLegacyDanmuDirectory);
+                                    if (string.IsNullOrEmpty(danmuXmlPath))
+                                    {
+                                        continue;
+                                    }
+
                                     var lastWriteTime = this._fileSystem.GetLastWriteTime(danmuXmlPath);
                                     var diff = DateTime.Now - lastWriteTime;
                                     if (diff.TotalSeconds < 3600 * 24 * 7)
@@ -1105,7 +1121,9 @@ namespace Emby.Plugin.Danmu
             bool ignoreCheck = false)
         {
             // 下载弹幕xml文件
-            var checkDownloadedKey = $"{item.Id}_{commentId}";
+            var checkDownloadedKey = DanmuFileLocator.BuildDownloadScopeKey(item.Id.ToString(), scraper.ProviderId);
+            var downloadLock = _downloadLocks.GetOrAdd(checkDownloadedKey, _ => new SemaphoreSlim(1, 1));
+            await downloadLock.WaitAsync().ConfigureAwait(false);
             try
             {
                 // 弹幕5分钟内更新过，忽略处理（有时Update事件会重复执行）
@@ -1147,6 +1165,10 @@ namespace Emby.Plugin.Danmu
                 _memoryCache.Remove(checkDownloadedKey);
                 _logger.LogError(ex, "[{0}]Exception handled download danmu file. name={1}", scraper.Name, item.Name);
             }
+            finally
+            {
+                downloadLock.Release();
+            }
         }
 
         private bool IsRepeatAction(BaseItem item, string checkDownloadedKey)
@@ -1155,8 +1177,12 @@ namespace Emby.Plugin.Danmu
             if (item.FileNameWithoutExtension == null) return false;
 
             // 通过xml文件属性判断（多线程时判断有误）
-            var danmuPath = Path.Combine(item.ContainingFolderPath, item.FileNameWithoutExtension + ".xml");
-            if (!this._fileSystem.Exists(danmuPath))
+            var danmuPath = DanmuFileLocator.FindBestExistingDanmuFile(
+                item.ContainingFolderPath,
+                item.FileNameWithoutExtension,
+                Array.Empty<string>(),
+                Config.UseLegacyDanmuDirectory);
+            if (string.IsNullOrEmpty(danmuPath) || !this._fileSystem.Exists(danmuPath))
             {
                 return false;
             }
@@ -1171,8 +1197,23 @@ namespace Emby.Plugin.Danmu
             // 单元测试时为null
             if (item.FileNameWithoutExtension == null) return;
 
-            // 下载弹幕xml文件
-            var danmuPath = Path.Combine(item.ContainingFolderPath, item.GetDanmuXmlPath(scraper.ProviderId));
+            var useLegacyDanmuDirectory = Config.UseLegacyDanmuDirectory;
+            DanmuFileLocator.EnsureDanmuDirectory(item.ContainingFolderPath, useLegacyDanmuDirectory);
+            var danmuPath = DanmuFileLocator.GetDanmuXmlFilePath(
+                item.ContainingFolderPath,
+                item.FileNameWithoutExtension,
+                scraper.ProviderId,
+                useLegacyDanmuDirectory);
+            if (File.Exists(danmuPath))
+            {
+                var existingBytes = File.ReadAllBytes(danmuPath);
+                if (existingBytes.SequenceEqual(bytes))
+                {
+                    _logger.LogInformation("[{0}]弹幕内容未变化，跳过覆盖写入：{1}", scraper.Name, danmuPath);
+                    return;
+                }
+            }
+
             try
             {
                 await this._fileSystem.WriteAllBytesAsync(danmuPath, bytes, CancellationToken.None).ConfigureAwait(false);
@@ -1212,7 +1253,11 @@ namespace Emby.Plugin.Danmu
                     assConfig.TuneDuration = this.Config.AssSpeed.Trim().ToInt() - 8;
                 }
 
-                var assPath = Path.Combine(item.ContainingFolderPath, item.FileNameWithoutExtension + ".chs[" + scraper.ProviderId + "_danmu].ass");
+                var assPath = DanmuFileLocator.GetAssFilePath(
+                    item.ContainingFolderPath,
+                    item.FileNameWithoutExtension,
+                    scraper.ProviderId,
+                    useLegacyDanmuDirectory);
                 Danmaku2Ass.Bilibili.GetInstance().Create(bytes, assConfig, assPath);
             }
         }

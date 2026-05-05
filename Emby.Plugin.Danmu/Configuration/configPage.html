@@ -53,6 +53,20 @@
 
                 <fieldset class="verticalSection verticalSection-extrabottompadding">
                     <legend>
+                        <h3>弹幕输出目录</h3>
+                    </legend>
+
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="UseLegacyDanmuDirectory" name="UseLegacyDanmuDirectory" type="checkbox" is="emby-checkbox" />
+                            <span>使用旧版同目录输出</span>
+                        </label>
+                        <div class="fieldDescription">默认关闭。关闭时，xml/ass 输出到媒体目录下的 danmu/ 子目录，并自动创建 .ignore 与 .embyignore；开启后回退到旧版媒体文件同目录。</div>
+                    </div>
+                </fieldset>
+
+                <fieldset class="verticalSection verticalSection-extrabottompadding">
+                    <legend>
                         <h3>生成ASS配置</h3>
                     </legend>
 
@@ -61,7 +75,7 @@
                             <input id="ToAss" name="ToAss" type="checkbox" is="emby-checkbox" />
                             <span>同时生成ASS格式弹幕</span>
                         </label>
-                        <div class="fieldDescription">勾选后，会在视频目录下生成ass格式的弹幕，命名格式：[视频名].chs[来源ID.danmu].ass</div>
+                        <div class="fieldDescription">勾选后，会在默认的 danmu/ 子目录中生成 ass 格式弹幕；若启用了上方“使用旧版同目录输出”，则回退到媒体文件同目录。命名格式：[视频名].chs[来源ID_danmu].ass</div>
                     </div>
                     <div class="inputContainer ass">
                         <label class="inputLabel inputLabelUnfocused" for="AssFont">ass弹幕字体</label>

@@ -1,3 +1,12 @@
-Emby.Plugin.Danmu/bin/
-Emby.Plugin.Danmu/obj/
+# Build outputs
+**/bin/
+**/obj/
+TestResults/
+*.trx
+
+# IDE
 .idea/
+.vscode/
+
+# OS files
+.DS_Store
