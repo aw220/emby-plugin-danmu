@@ -7,6 +7,10 @@
 2. 修复乐视剧集解析与字幕返回契约相关问题。
 3. 取消在剧集 `danmu/` 目录中自动创建 `.ignore` 和 `.embyignore` 的行为。
 4. 构建后会自动同步最新插件 DLL 到 `doc/Emby.Plugin.Danmu.dll`，方便直接分发和验证。
+5. 修复队列处理日志参数丢失问题：`ProcessQueuedEpisodeEvents` 现在会输出真实 episode count 与 event type，便于排障。
+6. 修复 `ForceSaveProviderId` 排障日志歧义：现在会显示 source / target item 的名称与类型，便于区分 Season / Series / Episode 元数据更新。
+7. 说明：Google.Protobuf / System.Memory 依赖链不是本轮主修复对象。
+8. 说明：手动远程下载仍可能触发 Emby 宿主生成临时 `.zh-CN.ass` sidecar 占位文件；该宿主交互副作用已记录，但本轮未调整返回契约。
 
 ## 2025-04-23更新
 1. 修复爱奇艺弹幕下载问题
