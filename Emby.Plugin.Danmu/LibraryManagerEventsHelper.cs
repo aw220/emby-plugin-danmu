@@ -924,7 +924,7 @@ namespace Emby.Plugin.Danmu
                 return;
             }
 
-            _logger.LogDebug("Processing {Count} episodes with event type {EventType}", events.Count, eventType);
+            _logger.LogDebug("Processing {0} episodes with event type {1}", events.Count, eventType);
 
             var episodes = new HashSet<Episode>(events
                 .Select(lev => lev.Item as Episode) // 显式进行类型转换
@@ -1264,13 +1264,25 @@ namespace Emby.Plugin.Danmu
 
         private async Task ForceSaveProviderId(BaseItem item, string providerId, string providerVal)
         {
-            _logger.Info("ForceSaveProviderId item={0}, providerId={1}, providerVal={2}", item?.GetParent(), providerId, providerVal);
             var updateItem = item;
             // Season 不存在需要更新到 Series上
             if (Guid.Empty.Equals(updateItem.Id) && updateItem is Season)
             {
                 updateItem = item.GetParent();
             }
+
+            var sourceItemName = item?.Name ?? "<null>";
+            var sourceItemType = item?.GetType().Name ?? "<null>";
+            var targetItemName = updateItem?.Name ?? "<null>";
+            var targetItemType = updateItem?.GetType().Name ?? "<null>";
+            _logger.Info(
+                "ForceSaveProviderId source={0}({1}), target={2}({3}), providerId={4}, providerVal={5}",
+                sourceItemName,
+                sourceItemType,
+                targetItemName,
+                targetItemType,
+                providerId,
+                providerVal);
 
             // 先清空旧弹幕的所有元数据
             foreach (var s in _scraperManager.All())
