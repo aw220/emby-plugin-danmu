@@ -62,37 +62,45 @@ namespace Emby.Plugin.Danmu.Scraper.Tencent
                 return cacheValue;
             }
 
-            await this.LimitRequestFrequently();
-
-            var originPostData = new TencentSearchRequest() { Query = keyword };
-            var url = $"https://pbaccess.video.qq.com/trpc.videosearch.mobile_search.HttpMobileRecall/MbSearchHttp";
-
-            var result = new List<TencentVideo>();
-            var searchResult = await httpClient.GetSelfResultAsyncWithError<TencentSearchResult>(GetDefaultHttpRequestOptions(url, null, cancellationToken), null, "POST", originPostData);
-            
-            if (searchResult != null && searchResult.Data != null && searchResult.Data.NormalList != null &&
-                searchResult.Data.NormalList.ItemList != null)
+            try
             {
-                foreach (var item in searchResult.Data.NormalList.ItemList)
+                await this.LimitRequestFrequently();
+
+                var originPostData = new TencentSearchRequest() { Query = keyword };
+                var url = $"https://pbaccess.video.qq.com/trpc.videosearch.mobile_search.HttpMobileRecall/MbSearchHttp";
+
+                var result = new List<TencentVideo>();
+                var searchResult = await httpClient.GetSelfResultAsyncWithError<TencentSearchResult>(GetDefaultHttpRequestOptions(url, null, cancellationToken), null, "POST", originPostData);
+                
+                if (searchResult != null && searchResult.Data != null && searchResult.Data.NormalList != null &&
+                    searchResult.Data.NormalList.ItemList != null)
                 {
-                    if (item.VideoInfo.Year == null || item.VideoInfo.Year == 0)
+                    foreach (var item in searchResult.Data.NormalList.ItemList)
                     {
-                        continue;
-                    }
-                    
-                    if (item.VideoInfo.Title.Distance(keyword) <= 0)
-                    {
-                        continue;
-                    }
+                        if (item.VideoInfo.Year == null || item.VideoInfo.Year == 0)
+                        {
+                            continue;
+                        }
+                        
+                        if (item.VideoInfo.Title.Distance(keyword) <= 0)
+                        {
+                            continue;
+                        }
 
-                    var video = item.VideoInfo;
-                    video.Id = item.Doc.Id;
-                    result.Add(video);
+                        var video = item.VideoInfo;
+                        video.Id = item.Doc.Id;
+                        result.Add(video);
+                    }
                 }
-            }
 
-            _memoryCache.Set<List<TencentVideo>>(cacheKey, result, expiredOption);
-            return result;
+                _memoryCache.Set<List<TencentVideo>>(cacheKey, result, expiredOption);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("TencentApi.SearchAsync - 腾讯搜索失败，按空结果降级。keyword={0}, error={1}", keyword, ex.Message);
+                return new List<TencentVideo>();
+            }
         }
 
         public async Task<TencentVideo?> GetVideoAsync(string id, CancellationToken cancellationToken)

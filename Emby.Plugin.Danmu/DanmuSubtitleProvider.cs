@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Emby.Plugin.Danmu.Core;
@@ -53,42 +55,49 @@ namespace Emby.Plugin.Danmu
 
         public async Task<SubtitleResponse> GetSubtitles(string id, CancellationToken cancellationToken)
         {
-            _logger.Info("开始查询弹幕 id={0}", id);
-            if (_memoryCache.TryGetValue(id, out bool has))
+            try
             {
-                if (has)
+                _logger.Info("开始查询弹幕 id={0}", id);
+                var requestCacheKey = id;
+                if (!TryReservePendingRequest(_memoryCache, requestCacheKey, _pendingDanmuDownloadExpiredOption))
                 {
-                    throw new CanIgnoreException($"已经触发下载了，无需重试");
+                    _logger.Info("弹幕任务已在后台处理中，忽略重复请求。id={0}", requestCacheKey);
+                    return CreateDeferredSubtitleResponse("弹幕任务已在后台处理中，请稍后在媒体目录中查看生成结果。");
                 }
-            }
-            
-            var base64EncodedBytes = System.Convert.FromBase64String(id);
-            id = System.Text.Encoding.UTF8.GetString(base64EncodedBytes);
-            var info = id.FromJson<SubtitleId>();
-            if (info == null)
-            {
-                throw new ArgumentException();
-            }
-
-            var item = _libraryManager.GetItemById(info.ItemId);
-            if (item == null)
-            {
-                throw new ArgumentException();
-            }
-
-            var scraper = _scraperManager.All().FirstOrDefault(x => x.ProviderId == info.ProviderId);
-            if (scraper != null)
-            {
-                // 创建一个临时的 BaseItem 来传递 ProviderId，避免直接修改原始库项目
-                var tempItem = CreateTemporaryItemWithProviderId(item, scraper.ProviderId, info.Id);
-                if (tempItem != null)
+                
+                var base64EncodedBytes = System.Convert.FromBase64String(id);
+                id = System.Text.Encoding.UTF8.GetString(base64EncodedBytes);
+                var info = id.FromJson<SubtitleId>();
+                if (info == null)
                 {
-                    _libraryManagerEventsHelper.QueueItem(tempItem, EventType.Force);
+                    throw new ArgumentException();
                 }
-            }
 
-            _memoryCache.Set<bool>(id, true, _pendingDanmuDownloadExpiredOption);
-            throw new CanIgnoreException($"'{item.Name}' 的弹幕任务已在后台开始下载，请稍后查看");
+                var item = _libraryManager.GetItemById(info.ItemId);
+                if (item == null)
+                {
+                    throw new ArgumentException();
+                }
+
+                var scraper = _scraperManager.All().FirstOrDefault(x => x.ProviderId == info.ProviderId);
+                if (scraper != null)
+                {
+                    // 创建一个临时的 BaseItem 来传递 ProviderId，避免直接修改原始库项目
+                    var tempItem = CreateTemporaryItemWithProviderId(item, scraper.ProviderId, info.Id);
+                    if (tempItem != null)
+                    {
+                        _libraryManagerEventsHelper.QueueItem(tempItem, EventType.Force);
+                    }
+                }
+
+                _logger.Info("'{0}' 的弹幕任务已在后台开始下载，请稍后查看", item.Name);
+                return CreateDeferredSubtitleResponse($"'{item.Name}' 的弹幕任务已提交，稍后会由后台生成完整弹幕文件。");
+            }
+            catch (CanIgnoreException ex)
+            {
+                _logger.Info("忽略可跳过的弹幕请求异常 id={0}, message={1}", id, ex.Message);
+                return CreateDeferredSubtitleResponse(ex.Message);
+            }
         }
 
         public async Task<IEnumerable<RemoteSubtitleInfo>> Search(SubtitleSearchRequest request,
@@ -216,6 +225,67 @@ namespace Emby.Plugin.Danmu
             }
 
             return tempItem;
+        }
+
+        internal static SubtitleResponse CreateDeferredSubtitleResponse(string message)
+        {
+            var normalizedMessage = string.IsNullOrWhiteSpace(message)
+                ? "弹幕任务已交由后台处理，请稍后重试。"
+                : message.Trim();
+
+            var assContent = string.Join("\n", new[]
+            {
+                "[Script Info]",
+                "Title: Danmu download deferred",
+                "ScriptType: v4.00+",
+                "WrapStyle: 0",
+                "PlayResX: 1920",
+                "PlayResY: 1080",
+                string.Empty,
+                "[V4+ Styles]",
+                "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+                "Style: Default,Arial,36,&H00FFFFFF,&H000000FF,&H64000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,40,1",
+                string.Empty,
+                "[Events]",
+                "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+                $"Dialogue: 0,0:00:00.00,0:00:05.00,Default,,0,0,0,,{EscapeAssText(normalizedMessage)}"
+            });
+
+            return new SubtitleResponse
+            {
+                Language = "zh-CN",
+                Format = "ass",
+                Stream = new MemoryStream(Encoding.UTF8.GetBytes(assContent))
+            };
+        }
+
+        private static string EscapeAssText(string value)
+        {
+            return string.IsNullOrEmpty(value)
+                ? string.Empty
+                : value.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}").Replace("\r", string.Empty).Replace("\n", "\\N");
+        }
+
+        internal static bool TryReservePendingRequest(IMemoryCache memoryCache, string cacheKey,
+            MemoryCacheEntryOptions pendingOption)
+        {
+            if (memoryCache == null)
+            {
+                throw new ArgumentNullException(nameof(memoryCache));
+            }
+
+            if (string.IsNullOrWhiteSpace(cacheKey))
+            {
+                throw new ArgumentException("Value cannot be null or whitespace.", nameof(cacheKey));
+            }
+
+            if (memoryCache.TryGetValue(cacheKey, out bool hasPending) && hasPending)
+            {
+                return false;
+            }
+
+            memoryCache.Set(cacheKey, true, pendingOption ?? new MemoryCacheEntryOptions());
+            return true;
         }
     }
 }

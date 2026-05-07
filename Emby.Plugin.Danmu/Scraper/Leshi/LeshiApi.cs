@@ -35,8 +35,12 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
 
         // Regex to extract episode links from show pages
         private static readonly Regex _episodeLinkRegex = new Regex(
-            @"<a[^>]*href=""[^""]*?/ptv/vplay/(\d+)\.html""[^>]*>(.*?)</a>",
-            RegexOptions.Compiled | RegexOptions.Singleline);
+            @"<a[^>]*href=""(?:(?:https?:)?//www\.le\.com)?/ptv/vplay/(\d+)\.html""[^>]*>(.*?)</a>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _episodeHrefRegex = new Regex(
+            @"<a[^>]*href=""(?:(?:https?:)?//www\.le\.com)?/ptv/vplay/(\d+)\.html""[^>]*",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
         // Regex to extract video duration from page
         private static readonly Regex _durationRegex = new Regex(
@@ -60,8 +64,34 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
 
         // Alternative: extract from HTML list items
         private static readonly Regex _episodeHtmlRegex = new Regex(
-            @"<a[^>]*href=""/ptv/vplay/(\d+)\.html""[^>]*title=""([^""]*?)""",
-            RegexOptions.Compiled | RegexOptions.Singleline);
+            @"<a[^>]*href=""(?:(?:https?:)?//www\.le\.com)?/ptv/vplay/(\d+)\.html""[^>]*?(?:title=""([^""]*?)"")?[^>]*>(.*?)</a>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _episodeCardRegex = new Regex(
+            @"<dl[^>]*class=""[^""]*\bdl_temp\b[^""]*""[^>]*>[\s\S]*?</dl>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _titleTextRegex = new Regex(
+            @"<dt[^>]*class=""d_tit""[^>]*>[\s\S]*?<a[^>]*>(.*?)</a>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _titleAttributeRegex = new Regex(
+            @"<a[^>]*title=""([^""]+)""[^>]*href=""(?:(?:https?:)?//www\.le\.com)?/ptv/vplay/\d+\.html""",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _episodeDescriptionRegex = new Regex(
+            @"<dd[^>]*class=""d_cnt""[^>]*>(.*?)</dd>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _episodeScopeRegex = new Regex(
+            @"<div class=""show_cnt (?:twxj|sjxj)-[^""]*""[\s\S]*?</div>\s*</div>\s*</div>|<div class=""show_play first_videolist[\s\S]*?</div>\s*</div>\s*</div>",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _bootstrapCurrentVideoRegex = new Regex(
+            @"video\s*:\s*\{[^}]*\bvid\s*:\s*(?:\""|')?(\d+)(?:\""|')?[^}]*\}",
+            RegexOptions.Compiled | RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
+        private static readonly Regex _htmlTagRegex = new Regex(@"<[^>]+>", RegexOptions.Compiled | RegexOptions.Singleline);
 
         // JSONP callback stripper
         private static readonly Regex _jsonpRegex = new Regex(
@@ -172,43 +202,38 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
 
             await this.LimitRequestFrequently().ConfigureAwait(false);
 
-            // Determine URL path based on content type
-            var pathType = "tv";
-            switch (contentType?.ToLower())
-            {
-                case "movie":
-                    pathType = "movie";
-                    break;
-                case "cartoon":
-                case "comic":
-                    pathType = "comic";
-                    break;
-            }
-
-            var url = $"https://www.le.com/{pathType}/{aid}.html";
-            var options = GetDefaultHttpRequestOptions(url, null, cancellationToken);
-            options.RequestContentType = null;
-            options.AcceptHeader = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-            options.RequestHeaders["Referer"] = "https://www.le.com/";
-
             var result = new List<LeshiEpisode>();
-            try
+            foreach (var url in BuildEpisodePageUrls(aid, contentType))
             {
-                using (var response = await httpClient.GetResponse(options).ConfigureAwait(false))
+                try
                 {
-                    using (var reader = new StreamReader(response.Content, Encoding.UTF8))
+                    var options = GetDefaultHttpRequestOptions(url, null, cancellationToken);
+                    options.RequestContentType = null;
+                    options.AcceptHeader = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+                    options.RequestHeaders["Referer"] = "https://www.le.com/";
+
+                    using (var response = await httpClient.GetResponse(options).ConfigureAwait(false))
                     {
-                        var html = await reader.ReadToEndAsync().ConfigureAwait(false);
-                        if (!string.IsNullOrEmpty(html))
+                        using (var reader = new StreamReader(response.Content, Encoding.UTF8))
                         {
+                            var html = await reader.ReadToEndAsync().ConfigureAwait(false);
+                            if (string.IsNullOrEmpty(html))
+                            {
+                                continue;
+                            }
+
                             result = ParseEpisodes(html);
+                            if (result.Count > 0)
+                            {
+                                break;
+                            }
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "获取乐视剧集列表失败. aid: {0}", aid);
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "获取乐视剧集列表失败. aid: {0}, url: {1}", aid, url);
+                }
             }
 
             if (result.Count > 0)
@@ -218,49 +243,225 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
             return result;
         }
 
-        private List<LeshiEpisode> ParseEpisodes(string html)
+        internal static List<LeshiEpisode> ParseEpisodes(string html)
         {
             var episodes = new List<LeshiEpisode>();
-
-            // Try to extract from HTML links with vplay pattern
-            var matches = _episodeHtmlRegex.Matches(html);
-            foreach (Match match in matches)
+            if (string.IsNullOrWhiteSpace(html))
             {
-                var vid = match.Groups[1].Value;
-                var title = HttpUtility.HtmlDecode(match.Groups[2].Value);
-
-                if (long.TryParse(vid, out var vidLong) && !episodes.Any(e => e.Vid == vidLong))
-                {
-                    episodes.Add(new LeshiEpisode
-                    {
-                        Vid = vidLong,
-                        Title = title
-                    });
-                }
+                return episodes;
             }
 
-            // Fallback: try extracting from episode link pattern
+            var scopes = ExtractEpisodeScopes(html);
+            foreach (var scope in scopes)
+            {
+                AppendEpisodesFromCards(scope, episodes);
+                AppendEpisodesFromAnchors(scope, episodes);
+            }
+
+            // show_cnt/first_videolist 可能只截到局部容器，再对整页做一次去重解析，
+            // 兼容 tv/{aid}.html 电视剧详情页的分集块。
+            AppendEpisodesFromCards(html, episodes);
+            AppendEpisodesFromAnchors(html, episodes);
+
             if (episodes.Count == 0)
             {
-                var linkMatches = _episodeLinkRegex.Matches(html);
-                foreach (Match match in linkMatches)
-                {
-                    var vid = match.Groups[1].Value;
-                    var title = Regex.Replace(match.Groups[2].Value, @"<[^>]+>", "").Trim();
-                    title = HttpUtility.HtmlDecode(title);
+                AppendRawVideoLinks(html, episodes);
+            }
 
-                    if (long.TryParse(vid, out var vidLong) && !episodes.Any(e => e.Vid == vidLong))
-                    {
-                        episodes.Add(new LeshiEpisode
-                        {
-                            Vid = vidLong,
-                            Title = string.IsNullOrEmpty(title) ? $"第{episodes.Count + 1}集" : title
-                        });
-                    }
-                }
+            if (episodes.Count == 0)
+            {
+                AppendCurrentVideoFromBootstrap(html, episodes);
             }
 
             return episodes;
+        }
+
+        private static IEnumerable<string> BuildEpisodePageUrls(string aid, string contentType)
+        {
+            var pathTypes = new List<string>();
+            void AddPathType(string pathType)
+            {
+                if (!string.IsNullOrWhiteSpace(pathType) && !pathTypes.Contains(pathType, StringComparer.OrdinalIgnoreCase))
+                {
+                    pathTypes.Add(pathType);
+                }
+            }
+
+            switch (contentType?.ToLowerInvariant())
+            {
+                case "movie":
+                    AddPathType("movie");
+                    break;
+                case "cartoon":
+                case "comic":
+                    AddPathType("comic");
+                    break;
+                case "playlet":
+                    AddPathType("playlet");
+                    break;
+                default:
+                    AddPathType("tv");
+                    break;
+            }
+
+            AddPathType("tv");
+            AddPathType("comic");
+            AddPathType("playlet");
+            AddPathType("movie");
+
+            foreach (var pathType in pathTypes)
+            {
+                yield return $"https://www.le.com/{pathType}/{aid}.html";
+            }
+        }
+
+        private static List<string> ExtractEpisodeScopes(string html)
+        {
+            var scopes = _episodeScopeRegex
+                .Matches(html)
+                .Cast<Match>()
+                .Where(match => match.Success && !string.IsNullOrWhiteSpace(match.Value))
+                .Select(match => match.Value)
+                .ToList();
+
+            if (scopes.Count == 0)
+            {
+                scopes.Add(html);
+            }
+
+            return scopes;
+        }
+
+        private static void AppendEpisodesFromCards(string html, ICollection<LeshiEpisode> episodes)
+        {
+            foreach (Match match in _episodeCardRegex.Matches(html))
+            {
+                var block = match.Value;
+                var videoId = ExtractVideoId(block);
+                if (!videoId.HasValue)
+                {
+                    continue;
+                }
+
+                var title = FirstNonEmpty(
+                    NormalizeTitle(_titleTextRegex.Match(block).Groups[1].Value),
+                    NormalizeTitle(_titleAttributeRegex.Match(block).Groups[1].Value),
+                    NormalizeTitle(_episodeDescriptionRegex.Match(block).Groups[1].Value));
+
+                AddEpisode(episodes, videoId.Value, title);
+            }
+        }
+
+        private static void AppendEpisodesFromAnchors(string html, ICollection<LeshiEpisode> episodes)
+        {
+            foreach (Match match in _episodeHtmlRegex.Matches(html))
+            {
+                if (!long.TryParse(match.Groups[1].Value, out var videoId))
+                {
+                    continue;
+                }
+
+                var title = FirstNonEmpty(
+                    NormalizeTitle(match.Groups[3].Value),
+                    NormalizeTitle(match.Groups[2].Value));
+
+                AddEpisode(episodes, videoId, title);
+            }
+
+            foreach (Match match in _episodeLinkRegex.Matches(html))
+            {
+                if (!long.TryParse(match.Groups[1].Value, out var videoId))
+                {
+                    continue;
+                }
+
+                var title = NormalizeTitle(match.Groups[2].Value);
+                AddEpisode(episodes, videoId, title);
+            }
+        }
+
+        private static long? ExtractVideoId(string html)
+        {
+            var match = _episodeLinkRegex.Match(html);
+            if (match.Success && long.TryParse(match.Groups[1].Value, out var videoId))
+            {
+                return videoId;
+            }
+
+            match = _episodeHtmlRegex.Match(html);
+            if (match.Success && long.TryParse(match.Groups[1].Value, out videoId))
+            {
+                return videoId;
+            }
+
+            match = _episodeHrefRegex.Match(html);
+            if (match.Success && long.TryParse(match.Groups[1].Value, out videoId))
+            {
+                return videoId;
+            }
+
+            return null;
+        }
+
+        private static void AppendRawVideoLinks(string html, ICollection<LeshiEpisode> episodes)
+        {
+            foreach (Match match in _episodeHrefRegex.Matches(html))
+            {
+                if (!long.TryParse(match.Groups[1].Value, out var videoId))
+                {
+                    continue;
+                }
+
+                AddEpisode(episodes, videoId, null);
+            }
+        }
+
+        private static void AppendCurrentVideoFromBootstrap(string html, ICollection<LeshiEpisode> episodes)
+        {
+            var match = _bootstrapCurrentVideoRegex.Match(html);
+            if (!match.Success || !long.TryParse(match.Groups[1].Value, out var videoId))
+            {
+                return;
+            }
+
+            AddEpisode(episodes, videoId, "第1集");
+        }
+
+        private static void AddEpisode(ICollection<LeshiEpisode> episodes, long videoId, string title)
+        {
+            if (episodes.Any(existing => existing.Vid == videoId))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(title) && title.IndexOf("预告", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return;
+            }
+
+            episodes.Add(new LeshiEpisode
+            {
+                Vid = videoId,
+                Title = string.IsNullOrWhiteSpace(title) ? $"第{episodes.Count + 1}集" : title
+            });
+        }
+
+        private static string NormalizeTitle(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            var decoded = HttpUtility.HtmlDecode(_htmlTagRegex.Replace(value, string.Empty));
+            return string.IsNullOrWhiteSpace(decoded)
+                ? null
+                : Regex.Replace(decoded, @"\s+", " ").Trim();
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         }
 
         public async Task<int> GetVideoDurationAsync(long vid, CancellationToken cancellationToken)
@@ -343,12 +544,9 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
                                 var json = StripJsonpCallback(body);
                                 if (!string.IsNullOrEmpty(json))
                                 {
-                                    var result = JsonSerializer.Deserialize<LeshiDanmuResult>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                                    if (result?.Data != null)
-                                    {
-                                        _logger.Info("乐视弹幕分段 {0}-{1}s 下载完成，获取到 {2} 条弹幕。", timeBegin, timeEnd, result.Data.Count);
-                                        danmuList.AddRange(result.Data);
-                                    }
+                                    var items = ParseDanmuItems(json);
+                                    _logger.Info("乐视弹幕分段 {0}-{1}s 下载完成，获取到 {2} 条弹幕。", timeBegin, timeEnd, items.Count);
+                                    danmuList.AddRange(items);
                                 }
                             }
                         }
@@ -365,6 +563,138 @@ namespace Emby.Plugin.Danmu.Scrapers.Leshi
             }
 
             return danmuList;
+        }
+
+        internal static List<LeshiDanmuItem> ParseDanmuItems(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new List<LeshiDanmuItem>();
+            }
+
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("data", out var dataElement))
+            {
+                return new List<LeshiDanmuItem>();
+            }
+
+            // 兼容旧结构: { data: [...] }
+            if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                var legacy = JsonSerializer.Deserialize<List<LeshiDanmuItem>>(dataElement.GetRawText(), new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+                return legacy ?? new List<LeshiDanmuItem>();
+            }
+
+            // 兼容新结构: { data: { list: [...] } }
+            if (dataElement.ValueKind == JsonValueKind.Object && dataElement.TryGetProperty("list", out var listElement) && listElement.ValueKind == JsonValueKind.Array)
+            {
+                var items = new List<LeshiDanmuItem>();
+                foreach (var item in listElement.EnumerateArray())
+                {
+                    items.Add(new LeshiDanmuItem
+                    {
+                        Id = TryGetInt64(item, "id") ?? TryGetInt64(item, "_id") ?? 0,
+                        CurrentPoint = TryGetDouble(item, "currentPoint") ?? TryGetDouble(item, "start") ?? 0,
+                        Content = TryGetString(item, "content") ?? TryGetString(item, "txt"),
+                        FontColor = TryGetString(item, "fontColor") ?? TryGetString(item, "color"),
+                        FontSize = TryGetInt32(item, "fontSize") ?? MapFontSize(TryGetString(item, "font")),
+                        Position = TryGetInt32(item, "position") ?? 0,
+                        Uid = TryGetString(item, "uid"),
+                        CreateTime = TryGetInt64(item, "createTime") ?? TryGetInt64(item, "addtime") ?? 0,
+                    });
+                }
+
+                return items;
+            }
+
+            return new List<LeshiDanmuItem>();
+        }
+
+        private static int MapFontSize(string font)
+        {
+            return font?.ToLowerInvariant() switch
+            {
+                "s" => 18,
+                "m" => 25,
+                "l" => 36,
+                _ => 25,
+            };
+        }
+
+        private static string TryGetString(JsonElement element, string name)
+        {
+            if (!element.TryGetProperty(name, out var value))
+            {
+                return null;
+            }
+
+            return value.ValueKind switch
+            {
+                JsonValueKind.String => value.GetString(),
+                JsonValueKind.Number => value.GetRawText(),
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                _ => null,
+            };
+        }
+
+        private static long? TryGetInt64(JsonElement element, string name)
+        {
+            if (!element.TryGetProperty(name, out var value))
+            {
+                return null;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number))
+            {
+                return number;
+            }
+
+            if (value.ValueKind == JsonValueKind.String && long.TryParse(value.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+
+            return null;
+        }
+
+        private static int? TryGetInt32(JsonElement element, string name)
+        {
+            var value = TryGetInt64(element, name);
+            if (!value.HasValue)
+            {
+                return null;
+            }
+
+            if (value.Value > int.MaxValue || value.Value < int.MinValue)
+            {
+                return null;
+            }
+
+            return (int)value.Value;
+        }
+
+        private static double? TryGetDouble(JsonElement element, string name)
+        {
+            if (!element.TryGetProperty(name, out var value))
+            {
+                return null;
+            }
+
+            if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+            {
+                return number;
+            }
+
+            if (value.ValueKind == JsonValueKind.String && double.TryParse(value.GetString(), out var parsed))
+            {
+                return parsed;
+            }
+
+            return null;
         }
 
         private string StripJsonpCallback(string body)

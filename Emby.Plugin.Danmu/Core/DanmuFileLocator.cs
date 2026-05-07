@@ -8,8 +8,6 @@ namespace Emby.Plugin.Danmu.Core
     public static class DanmuFileLocator
     {
         public const string DanmuDirectoryName = "danmu";
-        public const string IgnoreFileName = ".ignore";
-        public const string EmbyIgnoreFileName = ".embyignore";
 
         public static string BuildDownloadScopeKey(string itemId, string providerId)
         {
@@ -37,12 +35,6 @@ namespace Emby.Plugin.Danmu.Core
             }
 
             Directory.CreateDirectory(directoryPath);
-            if (!useLegacyDirectory)
-            {
-                EnsureIgnoreFile(directoryPath, IgnoreFileName);
-                EnsureIgnoreFile(directoryPath, EmbyIgnoreFileName);
-            }
-
             return directoryPath;
         }
 
@@ -157,15 +149,6 @@ namespace Emby.Plugin.Danmu.Core
             if (!useLegacyDirectory && !string.Equals(primaryDirectory, containingFolderPath, StringComparison.OrdinalIgnoreCase))
             {
                 yield return containingFolderPath;
-            }
-        }
-
-        private static void EnsureIgnoreFile(string directoryPath, string fileName)
-        {
-            var filePath = Path.Combine(directoryPath, fileName);
-            if (!File.Exists(filePath))
-            {
-                File.WriteAllText(filePath, string.Empty);
             }
         }
     }

@@ -64,18 +64,26 @@ namespace Emby.Plugin.Danmu.Scrapers.Xigua
                 return cacheValue;
             }
 
-            await this.LimitRequestFrequently().ConfigureAwait(false);
+            try
+            {
+                await this.LimitRequestFrequently().ConfigureAwait(false);
 
-            var encodedKeyword = HttpUtility.UrlEncode(keyword);
-            var url = $"https://m.ixigua.com/s/{encodedKeyword}";
-            var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+                var encodedKeyword = HttpUtility.UrlEncode(keyword);
+                var url = $"https://m.ixigua.com/s/{encodedKeyword}";
+                var response = await _httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
 
-            var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            var result = ParseSearchResults(html);
+                var html = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var result = ParseSearchResults(html);
 
-            _memoryCache.Set<List<XiguaSearchItem>>(cacheKey, result, expiredOption);
-            return result;
+                _memoryCache.Set<List<XiguaSearchItem>>(cacheKey, result, expiredOption);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("XiguaApi.SearchAsync - 西瓜搜索失败，按空结果降级。keyword={0}, error={1}", keyword, ex.Message);
+                return new List<XiguaSearchItem>();
+            }
         }
 
         /// <summary>

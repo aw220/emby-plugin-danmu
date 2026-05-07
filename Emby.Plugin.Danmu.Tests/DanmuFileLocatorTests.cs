@@ -35,7 +35,7 @@ public class DanmuFileLocatorTests
     }
 
     [Fact]
-    public void EnsureDanmuDirectory_CreatesDanmuDirectoryAndIgnoreFiles()
+    public void EnsureDanmuDirectory_CreatesDanmuDirectoryOnly()
     {
         using var dir = new TempDir();
 
@@ -43,8 +43,8 @@ public class DanmuFileLocatorTests
 
         Assert.Equal(Path.Combine(dir.Path, DanmuFileLocator.DanmuDirectoryName), danmuDirectory);
         Assert.True(Directory.Exists(danmuDirectory));
-        Assert.True(File.Exists(Path.Combine(danmuDirectory, DanmuFileLocator.IgnoreFileName)));
-        Assert.True(File.Exists(Path.Combine(danmuDirectory, DanmuFileLocator.EmbyIgnoreFileName)));
+        Assert.False(File.Exists(Path.Combine(danmuDirectory, ".ignore")));
+        Assert.False(File.Exists(Path.Combine(danmuDirectory, ".embyignore")));
     }
 
     [Fact]
